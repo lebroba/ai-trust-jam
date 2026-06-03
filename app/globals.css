@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #f6f0df;
+  --ink: #1f2a24;
+  --gold: #d9bd47;
+  --mint: #98c9a3;
+  --rust: #a94326;
+  --background: var(--paper);
+  --foreground: var(--ink);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-gold: var(--gold);
+  --color-mint: var(--mint);
+  --color-rust: var(--rust);
+  --font-sans: "Aptos", "Segoe UI", sans-serif;
+  --font-display: "Cooper Black", "Arial Black", "Aptos Display", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--paper);
+}
+
+body {
+  min-width: 320px;
+  background:
+    linear-gradient(90deg, rgb(31 42 36 / 0.04) 1px, transparent 1px),
+    linear-gradient(rgb(31 42 36 / 0.04) 1px, transparent 1px),
+    var(--paper);
+  background-size: 28px 28px;
+  color: var(--ink);
+  font-family: "Aptos", "Segoe UI", sans-serif;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: var(--gold);
+  color: var(--ink);
+}
