@@ -38,7 +38,7 @@ export default function CreateSessionPage() {
         </div>
         {error && <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm font-semibold text-red-800">{error}</p>}
         <Button className="mt-6 w-full" type="submit" disabled={pending}>
-          {pending ? "Creating…" : "Create session"} <ArrowRight className="h-4 w-4" />
+          {pending ? "Creating..." : "Create session"} <ArrowRight className="h-4 w-4" />
         </Button>
       </form>
     </main>
