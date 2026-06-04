@@ -203,6 +203,24 @@ export async function generateTeams(sessionId: string) {
   ]);
 }
 
+export async function addTeamCard(teamId: string, cardId: string) {
+  const supabase = client();
+  const { error } = await supabase
+    .from("team_cards")
+    .upsert({ team_id: teamId, card_id: cardId }, { onConflict: "team_id,card_id" });
+  if (error) throw error;
+}
+
+export async function removeTeamCard(teamId: string, cardId: string) {
+  const supabase = client();
+  const { error } = await supabase
+    .from("team_cards")
+    .delete()
+    .eq("team_id", teamId)
+    .eq("card_id", cardId);
+  if (error) throw error;
+}
+
 export async function saveConcept(
   sessionId: string,
   teamId: string,

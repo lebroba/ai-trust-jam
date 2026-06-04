@@ -1,18 +1,35 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import {
+  DndContext,
+  DragOverlay,
+  MouseSensor,
+  TouchSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 import {
   ArrowRight,
   Check,
   Download,
   Dices,
   Eye,
+  Pause,
+  Play,
   Plus,
   Presentation,
+  RotateCcw,
   Star,
   Users,
   VoteIcon,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,9 +38,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { phaseLabel, phaseMinutes, PHASES } from "@/lib/session/phases";
 import {
   addCard,
+  addTeamCard,
   generateTeams,
   joinSession,
   loadBundle,
+  removeTeamCard,
   renameParticipant,
   saveConcept,
   setPhase,
@@ -56,7 +75,6 @@ export function JamSession({ code, view = "dashboard" }: { code: string; view?: 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setName(myName(code));
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setParticipantId(myParticipantId(code));
     reload();
     return subscribeBundle(() => {
@@ -65,7 +83,6 @@ export function JamSession({ code, view = "dashboard" }: { code: string; view?: 
   }, [code, reload]);
 
   const joined = Boolean(participantId);
-  const participant = bundle?.participants.find((item) => item.id === participantId);
   const myTeam = useMemo(() => {
     if (!bundle || !participantId) return null;
     const member = bundle.teamMembers.find((item) => item.participant_id === participantId);
@@ -87,7 +104,7 @@ export function JamSession({ code, view = "dashboard" }: { code: string; view?: 
   if (!loaded) {
     return (
       <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center px-5 py-10">
-        <p className="text-sm font-black uppercase tracking-[0.22em] text-rust">Loading session…</p>
+        <p className="text-sm font-black uppercase tracking-[0.22em] text-rust">Loading session...</p>
       </main>
     );
   }
@@ -217,11 +234,69 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function Timer({ phase }: { phase: Phase }) {
-  const minutes = phaseMinutes(phase);
+  const total = phaseMinutes(phase) * 60;
+  const [secondsLeft, setSecondsLeft] = useState(total);
+  const [running, setRunning] = useState(false);
+
+  // Reset the countdown whenever the phase changes.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSecondsLeft(phaseMinutes(phase) * 60);
+    setRunning(false);
+  }, [phase]);
+
+  // Tick once a second while running; cleared on pause/unmount.
+  useEffect(() => {
+    if (!running) return;
+    const interval = setInterval(() => {
+      setSecondsLeft((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [running]);
+
+  // Stop the clock when it reaches zero.
+  useEffect(() => {
+    if (secondsLeft === 0 && running) setRunning(false);
+  }, [secondsLeft, running]);
+
+  const hasTimer = total > 0;
+  const done = hasTimer && secondsLeft === 0;
+  const mm = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+
   return (
-    <div className="rounded-md border-2 border-ink bg-gold p-5 text-center shadow-[6px_6px_0_#1f2a24]">
-      <div className="text-xs font-black uppercase tracking-[0.2em] text-ink/65">Timer</div>
-      <div className="font-display text-6xl font-black tabular-nums">{minutes ? `${String(minutes).padStart(2, "0")}:00` : "--:--"}</div>
+    <div
+      className={`rounded-md border-2 border-ink p-5 text-center shadow-[6px_6px_0_#1f2a24] ${done ? "bg-rust text-white" : "bg-gold"}`}
+    >
+      <div className={`text-xs font-black uppercase tracking-[0.2em] ${done ? "text-white" : "text-ink/65"}`}>
+        {done ? "Time's up" : "Timer"}
+      </div>
+      <div className="font-display text-6xl font-black tabular-nums">{hasTimer ? `${mm}:${ss}` : "--:--"}</div>
+      {hasTimer && (
+        <div className="mt-3 flex justify-center gap-2">
+          <Button size="sm" variant="secondary" onClick={() => setRunning((value) => !value)} disabled={done}>
+            {running ? (
+              <>
+                <Pause className="h-4 w-4" /> Pause
+              </>
+            ) : (
+              <>
+                <Play className="h-4 w-4" /> Start
+              </>
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setRunning(false);
+              setSecondsLeft(total);
+            }}
+          >
+            <RotateCcw className="h-4 w-4" /> Reset
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -281,48 +356,85 @@ function Dashboard({
   handleCard: (event: FormEvent) => void;
   reload: () => Promise<void>;
 }) {
+  const team = myTeam ?? bundle.teams[0] ?? null;
+  const [activeLabel, setActiveLabel] = useState<string | null>(null);
+  const sensors = useSensors(
+    // Mouse and touch are handled by separate sensors so a quick finger-swipe still
+    // scrolls the card wall: the mouse needs a 6px drag, touch needs a 200ms hold.
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } }),
+  );
+
+  function handleDragStart(event: DragStartEvent) {
+    const data = event.active.data.current as { label?: string } | undefined;
+    setActiveLabel(data?.label ?? null);
+  }
+
+  async function handleDragEnd(event: DragEndEvent) {
+    setActiveLabel(null);
+    const data = event.active.data.current as { type: string; cardId: string } | undefined;
+    const overId = event.over?.id;
+    if (!team || !data) return;
+    if (data.type === "wall" && overId === "team-dropzone") {
+      await addTeamCard(team.id, data.cardId);
+      await reload();
+    } else if (data.type === "assigned" && overId !== "team-dropzone") {
+      // Dragged an assigned card off the team box -> remove it.
+      await removeTeamCard(team.id, data.cardId);
+      await reload();
+    }
+  }
+
   return (
-    <div className="grid gap-5 xl:grid-cols-[1fr_420px]">
-      <section className="rounded-md border border-ink/15 bg-white p-5">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-xs font-black uppercase tracking-[0.22em] text-rust">Phase workspace</p>
-            <h2 className="mt-1 font-display text-3xl font-black">{phaseLabel(bundle.session.current_phase)}</h2>
-          </div>
-          <Button asChild variant="secondary">
-            <Link href={`/session/${bundle.session.code}/concepts`}>
-              <Eye className="h-4 w-4" /> Gallery
-            </Link>
-          </Button>
-        </div>
-
-        {bundle.session.current_phase === "aspects" && (
-          <form onSubmit={handleCard} className="mt-6 grid gap-3 sm:grid-cols-[1fr_auto]">
-            <Input value={card} onChange={(event) => setCard(event.target.value)} placeholder="Transparency" />
-            <Button type="submit">
-              <Plus className="h-4 w-4" /> Add card
+    <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={() => setActiveLabel(null)}>
+      <div className="grid gap-5 xl:grid-cols-[1fr_420px]">
+        <section className="rounded-md border border-ink/15 bg-white p-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.22em] text-rust">Phase workspace</p>
+              <h2 className="mt-1 font-display text-3xl font-black">{phaseLabel(bundle.session.current_phase)}</h2>
+            </div>
+            <Button asChild variant="secondary">
+              <Link href={`/session/${bundle.session.code}/concepts`}>
+                <Eye className="h-4 w-4" /> Gallery
+              </Link>
             </Button>
-          </form>
-        )}
+          </div>
 
-        {bundle.session.current_phase !== "aspects" && (
-          <TeamBoard bundle={bundle} participantId={participantId} myTeam={myTeam} reload={reload} />
-        )}
-      </section>
-      <CardWall cards={bundle.cards} />
-    </div>
+          {bundle.session.current_phase === "aspects" && (
+            <form onSubmit={handleCard} className="mt-6 grid gap-3 sm:grid-cols-[1fr_auto]">
+              <Input value={card} onChange={(event) => setCard(event.target.value)} placeholder="Transparency" />
+              <Button type="submit">
+                <Plus className="h-4 w-4" /> Add card
+              </Button>
+            </form>
+          )}
+
+          {bundle.session.current_phase !== "aspects" && (
+            <TeamBoard bundle={bundle} participantId={participantId} team={team} reload={reload} />
+          )}
+        </section>
+        <CardWall cards={bundle.cards} draggable={Boolean(team) && bundle.session.current_phase !== "aspects"} />
+      </div>
+      <DragOverlay>
+        {activeLabel ? (
+          <div className="rounded-md border-2 border-ink bg-paper px-3 py-2 text-sm font-black shadow-[3px_3px_0_#1f2a24]">
+            {activeLabel}
+          </div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
   );
 }
 
-function CardWall({ cards }: { cards: AspectCard[] }) {
+function CardWall({ cards, draggable }: { cards: AspectCard[]; draggable: boolean }) {
   return (
     <section className="rounded-md border border-ink/15 bg-mint p-5">
       <h2 className="font-display text-2xl font-black">Aspect cards</h2>
+      {draggable && <p className="mt-1 text-xs font-bold text-ink/55">Drag a card into your team to build on it.</p>}
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-2">
         {cards.map((card) => (
-          <div key={card.id} className="min-h-24 rounded-md border-2 border-ink bg-paper p-3 font-bold shadow-[3px_3px_0_#1f2a24]">
-            {card.content}
-          </div>
+          <DraggableWallCard key={card.id} card={card} disabled={!draggable} />
         ))}
       </div>
       {!cards.length && <p className="mt-4 text-sm text-ink/65">Cards appear here as participants submit them.</p>}
@@ -330,18 +442,39 @@ function CardWall({ cards }: { cards: AspectCard[] }) {
   );
 }
 
+function DraggableWallCard({ card, disabled }: { card: AspectCard; disabled: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `wall-${card.id}`,
+    data: { type: "wall", cardId: card.id, label: card.content },
+    disabled,
+  });
+  const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined;
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...(disabled ? {} : listeners)}
+      {...attributes}
+      className={`min-h-24 rounded-md border-2 border-ink bg-paper p-3 font-bold shadow-[3px_3px_0_#1f2a24] ${
+        disabled ? "" : "cursor-grab active:cursor-grabbing"
+      } ${isDragging ? "opacity-40" : ""}`}
+    >
+      {card.content}
+    </div>
+  );
+}
+
 function TeamBoard({
   bundle,
   participantId,
-  myTeam,
+  team,
   reload,
 }: {
   bundle: SessionBundle;
   participantId: string;
-  myTeam: Team | null;
+  team: Team | null;
   reload: () => Promise<void>;
 }) {
-  const team = myTeam ?? bundle.teams[0] ?? null;
   const concept = bundle.concepts.find((item) => item.team_id === team?.id);
   const [title, setTitle] = useState(concept?.title ?? "");
   const [description, setDescription] = useState(concept?.description ?? "");
@@ -371,13 +504,21 @@ function TeamBoard({
         <div className="flex items-center gap-2 font-black">
           <Users className="h-4 w-4" /> {team.team_name}
         </div>
-        <div className="mt-3 grid gap-2">
+        <DroppableTeamCards>
           {assignedCards.map((card) => (
-            <div key={card.id} className="rounded-md bg-gold px-3 py-2 text-sm font-black">
-              {card.content}
-            </div>
+            <DraggableAssignedCard
+              key={card.id}
+              card={card}
+              onRemove={async () => {
+                await removeTeamCard(team.id, card.id);
+                await reload();
+              }}
+            />
           ))}
-        </div>
+          {!assignedCards.length && (
+            <p className="px-1 py-3 text-center text-xs font-bold text-ink/45">Drag aspect cards here</p>
+          )}
+        </DroppableTeamCards>
       </div>
       <form
         className="grid gap-3"
@@ -394,6 +535,49 @@ function TeamBoard({
           Save concept <ArrowRight className="h-4 w-4" />
         </Button>
       </form>
+    </div>
+  );
+}
+
+function DroppableTeamCards({ children }: { children: ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id: "team-dropzone" });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`mt-3 grid min-h-20 gap-2 rounded-md border-2 border-dashed p-2 transition-colors ${
+        isOver ? "border-rust bg-rust/10" : "border-ink/20"
+      }`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DraggableAssignedCard({ card, onRemove }: { card: AspectCard; onRemove: () => void }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `assigned-${card.id}`,
+    data: { type: "assigned", cardId: card.id, label: card.content },
+  });
+  const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined;
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`flex items-center justify-between gap-2 rounded-md bg-gold px-3 py-2 text-sm font-black ${
+        isDragging ? "opacity-40" : ""
+      }`}
+    >
+      <span {...listeners} {...attributes} className="flex-1 cursor-grab active:cursor-grabbing">
+        {card.content}
+      </span>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`Remove ${card.content}`}
+        className="rounded p-0.5 text-ink/60 hover:bg-ink/10 hover:text-ink"
+      >
+        <X className="h-4 w-4" />
+      </button>
     </div>
   );
 }
